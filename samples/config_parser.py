@@ -82,9 +82,6 @@ def parse_yaml_file(yaml_file):
 
     mode = parameters.get('mode')
 
-    if mode is None:
-        raise ValueError('mode is not specified. This parameter is required.')
-
     if mode not in ('image', 'video'):
         raise ValueError('The mode is specified incorrectly.')
 
@@ -106,6 +103,9 @@ def parse_yaml_file(yaml_file):
     else:
         parameters['write_path'] = Path(parameters['write_path']).absolute()
 
+    if parameters.get('timings_path'):
+        parameters['timings_path'] = Path(parameters['timings_path']).absolute()
+
     if parameters.get('groundtruth_path') is None:
         parameters.update({'groundtruth_path' : None})
 
@@ -118,7 +118,7 @@ def parse_yaml_file(yaml_file):
                 'path_classes', 'path_weights', 'path_config', 'confidence',
                 'nms_threshold', 'scale', 'size', 'mean', 'swapRB',
                 'groundtruth_path', 'write_path', 'batch_size', 'silent_mode', 'adapter_name',
-                'path_anchors']
+                'path_anchors', 'timings_path']
 
     entered_arg = parameters.keys()
 

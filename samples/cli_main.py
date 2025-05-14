@@ -19,6 +19,8 @@ Modules:
 - writer: Manages result storage
 - accuracy_checker: Computes detection accuracy metrics
 """
+from dataclasses import asdict
+import json
 import sys
 from pathlib import Path
 import argparse
@@ -128,6 +130,12 @@ def main():
         components = config_main(parameters)
         pipeline = DetectionPipeline(components)
         pipeline.run()
+
+        if parameters.get('timings_path'):
+            data = asdict(pipeline.batches_timings)
+            data['total_images'] = components.reader.get_total_images()
+            with open(parameters['timings_path'], 'w', encoding="utf-8") as file:
+                json.dump(data, file)
 
         if all([parameters['groundtruth_path'], parameters['write_path']]):
             accur_calc = AccuracyCalculator()

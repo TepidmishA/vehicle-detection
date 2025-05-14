@@ -1,25 +1,30 @@
 """
-Experiment Runner Script
+Experiment Runner Script (CLI-based)
 
-Executes batch detection experiments with different models and batch sizes.
-Collects performance metrics and quality indicators, saves results to CSV,
-and generates analysis plots.
+Executes batch detection experiments by invoking `cli_main.py` in silent mode with temporary
+YAML configs. Results are collected from output CSVs, performance is measured by timing
+the subprocess, and accuracy is computed via AccuracyCalculator. Each CLI call is
+configured to utilize all CPU threads.
 """
+import json
 import os
-import traceback
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 import argparse
 import multiprocessing as mp
 
 import pandas as pd
+import yaml
 from tqdm import tqdm
 
-from samples.config_parser import parse_yaml_file
-from src.detector_pipeline.detector_pipeline import DetectionPipeline
+from src.detector_pipeline.detector_pipeline import BatchesTimings
 from src.accuracy_checker.accuracy_checker import AccuracyCalculator
 from src.perf_calculator.perf_calculator import PerformanceCalculator
 from src.benchmark.generate_plots import generate_perf_plots, generate_quality_plot
-from src.benchmark.config_benchmark import config_pipeline_components, ExperimentParameters
+from src.benchmark.config_benchmark import ExperimentParameters
 
 
 def experiment_argument_parser():
@@ -45,96 +50,135 @@ def experiment_argument_parser():
                         type=str,
                         choices=['image', 'video'],
                         default='image')
-
     return parser.parse_args()
 
 
-def run_single_experiment(model_config: str, batch_size: int, params: ExperimentParameters,
-                          template_file: Path):
+def run_process(tmp_path: str, cfg: list, model_cfg_path: str, batch_size: int):
+    """
+    Executes a subprocess to run a model experiment using the specified configuration.
+
+    :param tmp_path : Path to the temporary YAML configuration file for the experiment.
+    :param cfg: List of dictionaries containing the experiment's model configuration.
+    :param model_cfg_path: Path to the YAML file with the model configuration.
+    :param batch_size: The batch size for which the experiment is executed.
+    """
+    env = os.environ.copy()
+    n_threads = mp.cpu_count()
+    env.update({
+        'OMP_NUM_THREADS': str(n_threads),
+        'MKL_NUM_THREADS': str(n_threads),
+        'NUMEXPR_NUM_THREADS': str(n_threads)
+    })
+    proc = subprocess.run(
+        [sys.executable, str(Path('samples') / 'cli_main.py'), '--yaml', tmp_path],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        check=False
+    )
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode('utf-8', errors='ignore')
+        model_name = cfg[0].get('model_name', Path(model_cfg_path).stem)
+        raise RuntimeError(
+            f"Experiment failed for model '{model_name}' (batch_size={batch_size}): {stderr}"
+        )
+
+
+def run_single_experiment(model_cfg_path: str, batch_size: int,
+                          params: ExperimentParameters,
+                          tmp_dir: Path):
     """
     Runs a single experiment for the given model with the specified batch size.
-
-    :param model_config: Path to the YAML model configuration file.
+    :param model_cfg_path: Path to the YAML model configuration file.
     :param batch_size: The batch size to be used in the experiment.
     :param params: Experiment parameters, including paths to data, output files, and other settings.
-    :param template_file: Path to the temporary CSV file for storing data.
-
+    :param tmp_dir: Path to the temporary CSV file for storing data.
     :return: A dictionary containing the experiment results:
              model name, batch size, performance metrics, and accuracy.
     """
-    try:
-        config_params = parse_yaml_file(model_config)
-        components = config_pipeline_components(config_params,
-                                                batch_size,
-                                                template_file,
-                                                params)
-        pipeline = DetectionPipeline(components)
-        pipeline.run()
+    # Load base YAML
+    with open(model_cfg_path, 'r', encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
 
-        perf_metrics = PerformanceCalculator.calculate(
-            components.reader.get_total_images(),
-            batch_size,
-            pipeline.batches_timings
+    # Override fields
+    cfg[0]['mode'] = params.mode
+    cfg[0]['images_path'] = params.input_data_path
+    cfg[0]['groundtruth_path'] = params.groundtruth_path
+    cfg[0]['batch_size'] = batch_size
+    cfg[0]['silent_mode'] = True
+
+    # Prepare output CSV path
+    out_csv = tmp_dir / f"{Path(model_cfg_path).stem}_bs{batch_size}.csv"
+    timings_json = tmp_dir / f"{Path(model_cfg_path).stem}_bs{batch_size}_timings.json"
+    cfg[0]['write_path'] = str(out_csv)
+    cfg[0]['timings_path'] = str(timings_json)
+
+    # Write temp YAML
+    fd, tmp_path = tempfile.mkstemp(suffix='.yaml', dir=tmp_dir)
+    os.close(fd)
+    with open(tmp_path, 'w', encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+
+    # Run subprocess in project root with configured env
+    run_process(tmp_path, cfg, model_cfg_path, batch_size)
+
+    # Compute perf metrics
+    with open(timings_json, 'r', encoding="utf-8") as jf:
+        import_data = json.load(jf)
+
+    perf_metrics = PerformanceCalculator.calculate(
+        import_data['total_images'],
+        batch_size,
+        BatchesTimings(
+            preprocess_time=import_data['preprocess_time'],
+            inference_time=import_data['inference_time'],
+            postprocess_time=import_data['postprocess_time']
         )
+    )
 
-        accuracy_calculator = AccuracyCalculator()
-        accuracy_calculator.load_detections(template_file)
-        accuracy_calculator.load_groundtruths(params.groundtruth_path)
+    # Compute accuracy
+    acc_calc = AccuracyCalculator()
+    acc_calc.load_detections(out_csv)
+    acc_calc.load_groundtruths(params.groundtruth_path)
+    accuracy_map = acc_calc.calc_map()
 
-        accuracy_map = accuracy_calculator.calc_map()
-
-        return {
-            'model': config_params['model_name'],
-            'batch_size': batch_size,
-            **perf_metrics,
-            'accuracy_map': accuracy_map
-        }
-
-    except Exception as e:
-        traceback.print_exc()
-        return {
-            'model': model_config,
-            'batch_size': batch_size,
-            'error': str(e)
-        }
+    return {
+        'model': cfg[0].get('model_name'),
+        'batch_size': batch_size,
+        **perf_metrics,
+        'accuracy_map': accuracy_map
+    }
 
 
-def run_experiments(
-        model_config_paths: list[str],
-        batch_sizes: list[int],
-        params: ExperimentParameters):
+def run_experiments(model_cfgs: list, batch_sizes: list,
+                    params: ExperimentParameters):
     """
     Executes batch detection experiments with given model configurations and batch sizes.
     Runs detection pipelines, collects performance and accuracy metrics, saves results to CSV,
     and generates analysis plots.
-
-    :param model_config_paths: List of paths to model configuration YAML files.
+    :param model_cfgs: List of paths to model configuration YAML files.
     :param batch_sizes: List of batch sizes to be tested.
     :param params: Experiment parameters including input/output paths and mode.
     """
-    # Create output directory
     os.makedirs(params.output_path, exist_ok=True)
-    os.makedirs(Path('./src/benchmark/tmp').absolute(), exist_ok=True)
+
     tmp_dir = Path('./src/benchmark/tmp').absolute()
+    shutil.rmtree(tmp_dir, ignore_errors=True)  # Ensure clean tmp directory
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
-    for model_config in tqdm(model_config_paths, desc='Models configs'):
-        for batch_size in tqdm(batch_sizes, desc='Batch sizes', leave=False):
-            experiment_args = (
-                    model_config,
-                    batch_size,
-                    params,
-                    tmp_dir / f"{Path(model_config).stem}_bs{batch_size}.csv"
-            )
-            p = mp.Process(target=run_single_experiment, args=experiment_args)
-            p.start()
-            p.join()
+    for model_cfg in tqdm(model_cfgs, desc='Models'):
+        for bs in tqdm(batch_sizes, desc='Batch sizes', leave=False):
+            res = run_single_experiment(model_cfg, bs, params, tmp_dir)
+            results.append(res)
 
-    # Save and analyze results
+    # Save results
     df = pd.DataFrame(results)
-    results_file = os.path.join(params.output_path, 'benchmark_results.csv')
-    df.to_csv(results_file, index=False)
+    csv_out = Path(params.output_path) / 'benchmark_results.csv'
+    df.to_csv(csv_out, index=False)
+
+    # Cleanup temporary files
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Generate plots
     generate_perf_plots(df, params.output_path)
