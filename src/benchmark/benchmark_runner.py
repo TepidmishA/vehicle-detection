@@ -183,13 +183,11 @@ def run_experiments(dinamic_model_cfgs: list, onnx_model_cfgs: list,
             orig_cfg_path = Path(model_cfg)
             cfg_text = orig_cfg_path.read_text(encoding='utf-8')
 
-            # Replace placeholder with concrete batch size
-            new_cfg_text = cfg_text.replace('{batch_size}', str(bs))
 
             # Write to temporary config file
             tmp_cfg_filename = f"{orig_cfg_path.stem}_bs{bs}.yaml"
             tmp_cfg_path = tmp_dir / tmp_cfg_filename
-            tmp_cfg_path.write_text(new_cfg_text, encoding='utf-8')
+            tmp_cfg_path.write_text(cfg_text.replace('{batch_size}', str(bs)), encoding='utf-8')
 
             res = run_single_experiment(str(tmp_cfg_path), bs, params, tmp_dir)
             results.append(res)
@@ -209,16 +207,16 @@ def run_experiments(dinamic_model_cfgs: list, onnx_model_cfgs: list,
 
 if __name__ == '__main__':
     DEFAULT_DINAMIC_MODEL_CONFIGS = [
-        # './configs/torchvision/detector_config_fasterRCNN.yaml',
-        # './configs/torchvision/detector_config_FCOS.yaml',
-        # './configs/torchvision/detector_config_RetinaNet.yaml',
-        # './configs/torchvision/detector_config_SSD.yaml',
-        # './configs/torchvision/detector_config_SSDlite.yaml',
-        #
-        # './configs/yolo/detector_config_yolov3_tinyu.yaml',
-        # './configs/yolo/detector_config_yolov11s.yaml',
-        # './configs/yolo/detector_config_yolov12s.yaml',
-        # './configs/rtdetr/detector_config_rtdetr-l.yaml',
+        './configs/torchvision/detector_config_fasterRCNN.yaml',
+        './configs/torchvision/detector_config_FCOS.yaml',
+        './configs/torchvision/detector_config_RetinaNet.yaml',
+        './configs/torchvision/detector_config_SSD.yaml',
+        './configs/torchvision/detector_config_SSDlite.yaml',
+
+        './configs/yolo/detector_config_yolov3_tinyu.yaml',
+        './configs/yolo/detector_config_yolov11s.yaml',
+        './configs/yolo/detector_config_yolov12s.yaml',
+        './configs/rtdetr/detector_config_rtdetr-l.yaml',
     ]
     DEFAULT_ONNX_MODEL_CONFIGS = [
         './configs/onnx/detector_config_yolov3-tinyu_onnx.yaml',

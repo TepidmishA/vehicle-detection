@@ -395,52 +395,72 @@ class AdapterUltralytics(Adapter):
 
 
 class AdapterUltralyticsYoloONNX(AdapterOpenCV):
+    """
+    Adapter for processing the output of the Ultralytics YOLO model in ONNX format
+    using OpenCV.
+
+    This class processes model outputs, filters detections based on confidence
+    thresholds, and applies NMS (Non-maximum Suppression) to remove redundant boxes.
+    """
+
+    @staticmethod
+    def iterate_step(output: np.ndarray, boxes: list, scores: list, class_ids: list):
+        """
+        Processes a single output layer of the model to extract detections.
+
+        :param output: Model's output for the current layer.
+        :param boxes: List to store coordinates of detected objects (bounding boxes).
+        :param scores: List to store the confidence scores of detections.
+        :param class_ids: List to store class IDs of detected objects.
+        """
+        output_iter = np.array([cv.transpose(output)])
+        for i in range(output_iter.shape[1]):
+            (_, max_score, _, (_, max_class_index)) = cv.minMaxLoc(output_iter[0][i][4:])
+            if max_score >= 0.25:
+                box = [
+                    output_iter[0][i][0] - (0.5 * output_iter[0][i][2]),
+                    output_iter[0][i][1] - (0.5 * output_iter[0][i][3]),
+                    output_iter[0][i][2],  # width
+                    output_iter[0][i][3],  # height
+                ]
+                boxes.append(box)
+                scores.append(max_score)
+                class_ids.append(max_class_index)
+
     def post_processing(self, outputs: list, image_sizes: list, **kwargs):
+        """
+        Post-processes model outputs: applies NMS and scales bounding box coordinates.
+
+        :param outputs: List of model outputs (activations) for the batch.
+        :param image_sizes: Sizes of images in the batch (list of tuples: (width, height)).
+        :param kwargs: Additional parameters, e.g. 'size': original input size to the model.
+        :return: A list of detections for each image in the batch. Each detection
+                 is represented as a list:
+                 [class_name, x_min, y_min, x_max, y_max, confidence].
+        """
         batch_detections = []
-        for iter in range(len(outputs)):
-            output_iter = np.array([cv.transpose(outputs[iter])])
-            rows = output_iter.shape[1]
-
-            # image_sizes: (width, height)
-            scale_x = image_sizes[iter][0] / kwargs["size"][0]
-            scale_y = image_sizes[iter][1] / kwargs["size"][1]
-
+        for r, _ in enumerate(outputs):
             boxes = []
             scores = []
             class_ids = []
 
             # Iterate through output to collect bounding boxes, confidence scores, and class IDs
-            for i in range(rows):
-                classes_scores = output_iter[0][i][4:]
-                (minScore, maxScore, minClassLoc, (x, maxClassIndex)) = cv.minMaxLoc(
-                    classes_scores)
-                if maxScore >= 0.25:
-                    box = [
-                        output_iter[0][i][0] - (0.5 * output_iter[0][i][2]),  # x center - width/2 = left x
-                        output_iter[0][i][1] - (0.5 * output_iter[0][i][3]),  # y center - height/2 = top y
-                        output_iter[0][i][2],  # width
-                        output_iter[0][i][3],  # height
-                    ]
-                    boxes.append(box)
-                    scores.append(maxScore)
-                    class_ids.append(maxClassIndex)
+            self.iterate_step(_, boxes, scores, class_ids)
 
             # Apply NMS (Non-maximum suppression)
             result_boxes = cv.dnn.NMSBoxes(boxes, scores, 0.25, 0.45, 0.5)
 
+            # image_sizes: (width, height)
+            scale_x = image_sizes[r][0] / kwargs["size"][0]
+            scale_y = image_sizes[r][1] / kwargs["size"][1]
             detections = []
-            for i in range(len(result_boxes)):
-                index = result_boxes[i]
+            for index in result_boxes:
                 box = boxes[index]
-
-                class_name = self.class_names[class_ids[index]]
-                x0 = box[0] * scale_x
-                y0 = box[1] * scale_y
-                x1 = (box[0] + box[2]) * scale_x
-                y1 = (box[1] + box[3]) * scale_y
-
                 detections.append([
-                    class_name, int(x0), int(y0), int(x1), int(y1), float(scores[index])
+                    self.class_names[class_ids[index]],
+                    int(box[0] * scale_x), int(box[1] * scale_y),
+                    int((box[0] + box[2]) * scale_x), int((box[1] + box[3]) * scale_y),
+                    float(scores[index])
                 ])
 
             batch_detections.append(detections)
