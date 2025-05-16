@@ -105,7 +105,7 @@ def run_single_experiment(model_cfg_path: str, batch_size: int,
     cfg[0]['images_path'] = params.input_data_path
     cfg[0]['groundtruth_path'] = params.groundtruth_path
     cfg[0]['batch_size'] = batch_size
-    cfg[0]['silent_mode'] = False
+    cfg[0]['silent_mode'] = True
 
     # Prepare output CSV path
     out_csv = tmp_dir / f"{Path(model_cfg_path).stem}_bs{batch_size}.csv"
