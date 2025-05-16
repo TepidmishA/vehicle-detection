@@ -293,89 +293,6 @@ class AdapterYOLOTiny(AdapterOpenCV):
         return self._nms(boxes, confidences, classes)
 
 
-# Working only on batch size 1
-class AdapterYOLOX(AdapterOpenCV):
-    """
-    Adapter for YOLOX models with batch processing support.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.input_size = (416, 416)
-
-    def __demo_postprocess(self, outputs, img_size, p6=False):
-        grids = []
-        expanded_strides = []
-        strides = [8, 16, 32] if not p6 else [8, 16, 32, 64]
-        hsizes = [img_size[0] // stride for stride in strides]
-        wsizes = [img_size[1] // stride for stride in strides]
-
-        for hsize, wsize, stride in zip(hsizes, wsizes, strides):
-            grid = np.stack(np.meshgrid(np.arange(wsize), np.arange(hsize)), 2)
-            grid = grid.reshape(1, -1, 2)
-            grids.append(grid)
-            shape = grid.shape[:2]
-            expanded_strides.append(np.full((*shape, 1), stride))
-
-        grids = np.concatenate(grids, axis=1)
-        expanded_strides = np.concatenate(expanded_strides, axis=1)
-
-        outputs[..., :2] = (outputs[..., :2] + grids) * expanded_strides
-        outputs[..., 2:4] = np.exp(outputs[..., 2:4]) * expanded_strides
-        return outputs
-
-    def post_processing(self, outputs: list, image_sizes: list, **kwargs):
-        batch_detections = []
-        input_size = (416, 416)
-
-        for output, (img_w, img_h) in zip(outputs, image_sizes):
-            if output.ndim == 3 and output.shape[0] == 1:
-                output = output[0]  # (N, 85)
-
-            output = self.__demo_postprocess(output, input_size)
-
-            bboxes = output[:, :4]
-            scores = output[:, 4:5] * output[:, 5:]
-            class_ids = scores.argmax(axis=1)
-            confidences = scores[np.arange(len(scores)), class_ids]
-
-            detections = self._process_bboxes(
-                bboxes=bboxes,
-                class_ids=class_ids,
-                confidences=confidences,
-                image_dimensions=(img_w, img_h)
-            )
-            batch_detections.append(detections)
-
-        return batch_detections
-
-    def _process_bboxes(self, bboxes, class_ids, confidences, image_dimensions):
-        final_boxes = []
-        final_classes = []
-        final_confidences = []
-        img_w, img_h = image_dimensions  # Unpack image dimensions
-
-        for bbox, class_id, confidence in zip(bboxes, class_ids, confidences):
-            class_name = self.class_names[class_id]
-            if confidence < self.conf or class_name not in self.interest_classes:
-                continue
-
-            coordinates = self._calculate_coordinates(bbox, img_w, img_h)
-            final_boxes.append(coordinates)
-            final_classes.append(class_name)
-            final_confidences.append(float(confidence))
-
-        return self._nms(final_boxes, final_confidences, final_classes)
-
-    def _calculate_coordinates(self, bbox, img_w, img_h):
-        input_w, input_h = self.input_size
-        x_center, y_center, width, height = bbox
-        x0 = int((x_center - width / 2) / (input_w / img_w))
-        y0 = int((y_center - height / 2) / (input_h / img_h))
-        x1 = int((x_center + width / 2) / (input_w / img_w))
-        y1 = int((y_center + height / 2) / (input_h / img_h))
-        return x0, y0, x1, y1
-
-
 class AdapterTorchvision(Adapter):
     """
     Adapter implementation for Faster R-CNN models.
@@ -475,3 +392,57 @@ class AdapterUltralytics(Adapter):
 
         indexes = indexes.flatten()
         return [detections[i] for i in indexes]
+
+
+class AdapterUltralyticsYoloONNX(AdapterOpenCV):
+    def post_processing(self, outputs: list, image_sizes: list, **kwargs):
+        batch_detections = []
+        for iter in range(len(outputs)):
+            output_iter = np.array([cv.transpose(outputs[iter])])
+            rows = output_iter.shape[1]
+
+            # image_sizes: (width, height)
+            scale_x = image_sizes[iter][0] / kwargs["size"][0]
+            scale_y = image_sizes[iter][1] / kwargs["size"][1]
+
+            boxes = []
+            scores = []
+            class_ids = []
+
+            # Iterate through output to collect bounding boxes, confidence scores, and class IDs
+            for i in range(rows):
+                classes_scores = output_iter[0][i][4:]
+                (minScore, maxScore, minClassLoc, (x, maxClassIndex)) = cv.minMaxLoc(
+                    classes_scores)
+                if maxScore >= 0.25:
+                    box = [
+                        output_iter[0][i][0] - (0.5 * output_iter[0][i][2]),  # x center - width/2 = left x
+                        output_iter[0][i][1] - (0.5 * output_iter[0][i][3]),  # y center - height/2 = top y
+                        output_iter[0][i][2],  # width
+                        output_iter[0][i][3],  # height
+                    ]
+                    boxes.append(box)
+                    scores.append(maxScore)
+                    class_ids.append(maxClassIndex)
+
+            # Apply NMS (Non-maximum suppression)
+            result_boxes = cv.dnn.NMSBoxes(boxes, scores, 0.25, 0.45, 0.5)
+
+            detections = []
+            for i in range(len(result_boxes)):
+                index = result_boxes[i]
+                box = boxes[index]
+
+                class_name = self.class_names[class_ids[index]]
+                x0 = box[0] * scale_x
+                y0 = box[1] * scale_y
+                x1 = (box[0] + box[2]) * scale_x
+                y1 = (box[1] + box[3]) * scale_y
+
+                detections.append([
+                    class_name, int(x0), int(y0), int(x1), int(y1), float(scores[index])
+                ])
+
+            batch_detections.append(detections)
+
+        return batch_detections

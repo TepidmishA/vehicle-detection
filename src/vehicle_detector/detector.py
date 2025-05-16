@@ -52,6 +52,7 @@ class Detector(ABC):
         self.size = param_detect['size']
         self.mean = param_detect['mean']
         self.swap_rb = param_detect['swapRB']
+        self.batch_size = param_detect['batch_size']
         self.adapter = adapter
 
     @abstractmethod
@@ -101,14 +102,11 @@ class Detector(ABC):
 
         config = {
             'AdapterYOLO': lambda:
-                VehicleDetectorOpenCV('Darknet', paths, param_detect,
+                VehicleDetectorOpenCV('ONNX', paths, param_detect,
                                       make_adapter(ad.AdapterYOLO)),
             'AdapterYOLOTiny': lambda:
                 VehicleDetectorOpenCV('ONNX', paths, param_detect,
                                       make_adapter(ad.AdapterYOLOTiny)),
-            'AdapterYOLOX': lambda:
-                VehicleDetectorOpenCV('ONNX', paths, param_detect,
-                                      make_adapter(ad.AdapterYOLOX)),
             'AdapterDetectionTask': lambda:
                 VehicleDetectorOpenCV('TensorFlow', paths, param_detect,
                                       make_adapter(ad.AdapterDetectionTask)),
@@ -118,6 +116,9 @@ class Detector(ABC):
             'AdapterUltralytics': lambda:
                 VehicleDetectorUltralytics(paths, param_detect,
                                            make_adapter(ad.AdapterUltralytics)),
+            'AdapterUltralyticsYoloONNX': lambda:
+                VehicleDetectorOpenCV('ONNX', paths, param_detect,
+                                      make_adapter(ad.AdapterUltralyticsYoloONNX)),
             'fake': lambda:
                 FakeDetector()
         }
@@ -147,6 +148,11 @@ class VehicleDetectorOpenCV(Detector):
             raise ValueError('Incorrect format load.')
 
     def detect(self, images: list[np.ndarray]):
+        orig_image_count = len(images)
+        if orig_image_count < self.batch_size:
+            for _ in range(self.batch_size - orig_image_count):
+                images.append(images[0])
+
         # Pre-process image using the adapter
         start_time = time.time()
         image_transformed = self.adapter.pre_processing(images,
@@ -166,8 +172,11 @@ class VehicleDetectorOpenCV(Detector):
         # Post-process the detections using the adapter
         start_time = time.time()
         image_sizes = [(img.shape[1], img.shape[0]) for img in images]  # (width, height)
-        detections = self.adapter.post_processing(outputs, image_sizes)
+        detections = self.adapter.post_processing(outputs, image_sizes,
+                                                  size=self.size)
         postproc_time = time.time() - start_time
+
+        detections = detections[:orig_image_count]
 
         return detections, preproc_time, inference_time, postproc_time
 

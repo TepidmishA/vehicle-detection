@@ -1,0 +1,24 @@
+# ------------------------------------------------------------
+# This configuration uses class labels from:
+# https://github.com/amikelive/coco-labels/blob/master/
+#
+# Alternatively, specify custom paths to your own version of
+# label file.
+# ------------------------------------------------------------
+
+
+- mode : image
+  images_path: ./data/imgs_MOV03478
+  groundtruth_path: ./layout/mov03478.csv
+  model_name: Yolov11s_openCV
+  adapter_name: AdapterUltralyticsYoloONNX
+  path_classes: https://raw.githubusercontent.com/amikelive/coco-labels/master/coco-labels-2014_2017.txt
+  path_weights: ./weights/ultralitics_onnx/yolo11s_{batch_size}.onnx
+                # replace {batch_size} with target batch_size (1, 2, 4, 8, ...)
+  batch_size: 1
+  confidence: 0.5
+  nms_threshold: 0.4
+  scale: 0.0039217  # 1 / 255
+  size: 640 640
+  mean:           # placeholder
+  swapRB: True

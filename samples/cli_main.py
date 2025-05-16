@@ -81,7 +81,8 @@ def config_main(parameters: dict):
         'scale': parameters['scale'],
         'size': parameters['size'],
         'mean': parameters['mean'],
-        'swapRB': parameters['swapRB']
+        'swapRB': parameters['swapRB'],
+        'batch_size': parameters['batch_size']
     }
 
     param_adapter = {

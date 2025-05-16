@@ -105,7 +105,7 @@ def run_single_experiment(model_cfg_path: str, batch_size: int,
     cfg[0]['images_path'] = params.input_data_path
     cfg[0]['groundtruth_path'] = params.groundtruth_path
     cfg[0]['batch_size'] = batch_size
-    cfg[0]['silent_mode'] = True
+    cfg[0]['silent_mode'] = False
 
     # Prepare output CSV path
     out_csv = tmp_dir / f"{Path(model_cfg_path).stem}_bs{batch_size}.csv"
@@ -150,13 +150,15 @@ def run_single_experiment(model_cfg_path: str, batch_size: int,
     }
 
 
-def run_experiments(model_cfgs: list, batch_sizes: list,
+def run_experiments(dinamic_model_cfgs: list, onnx_model_cfgs: list,
+                    batch_sizes: list,
                     params: ExperimentParameters):
     """
     Executes batch detection experiments with given model configurations and batch sizes.
     Runs detection pipelines, collects performance and accuracy metrics, saves results to CSV,
     and generates analysis plots.
-    :param model_cfgs: List of paths to model configuration YAML files.
+    :param dinamic_model_cfgs: List of paths to dinamic model configuration YAML files.
+    :param onnx_model_cfgs: List of paths to onnx model configuration YAML files.
     :param batch_sizes: List of batch sizes to be tested.
     :param params: Experiment parameters including input/output paths and mode.
     """
@@ -167,9 +169,29 @@ def run_experiments(model_cfgs: list, batch_sizes: list,
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
-    for model_cfg in tqdm(model_cfgs, desc='Models'):
+
+    # models with dinamic shape
+    for model_cfg in tqdm(dinamic_model_cfgs, desc='Models'):
         for bs in tqdm(batch_sizes, desc='Batch sizes', leave=False):
             res = run_single_experiment(model_cfg, bs, params, tmp_dir)
+            results.append(res)
+
+    # onnx models for openCV
+    for model_cfg in tqdm(onnx_model_cfgs, desc='Models'):
+        for bs in tqdm(batch_sizes, desc='Batch sizes', leave=False):
+            # Read original config template
+            orig_cfg_path = Path(model_cfg)
+            cfg_text = orig_cfg_path.read_text(encoding='utf-8')
+
+            # Replace placeholder with concrete batch size
+            new_cfg_text = cfg_text.replace('{batch_size}', str(bs))
+
+            # Write to temporary config file
+            tmp_cfg_filename = f"{orig_cfg_path.stem}_bs{bs}.yaml"
+            tmp_cfg_path = tmp_dir / tmp_cfg_filename
+            tmp_cfg_path.write_text(new_cfg_text, encoding='utf-8')
+
+            res = run_single_experiment(str(tmp_cfg_path), bs, params, tmp_dir)
             results.append(res)
 
     # Save results
@@ -186,18 +208,24 @@ def run_experiments(model_cfgs: list, batch_sizes: list,
 
 
 if __name__ == '__main__':
-    DEFAULT_MODEL_CONFIGS = [
-        './configs/torchvision/detector_config_fasterRCNN.yaml',
-        './configs/torchvision/detector_config_FCOS.yaml',
-        './configs/torchvision/detector_config_RetinaNet.yaml',
-        './configs/torchvision/detector_config_SSD.yaml',
-        './configs/torchvision/detector_config_SSDlite.yaml',
-
-        './configs/yolo/detector_config_yolov3_tinyu.yaml',
-        './configs/yolo/detector_config_yolov11s.yaml',
-        './configs/yolo/detector_config_yolov12s.yaml',
-        './configs/rtdetr/detector_config_rtdetr-l.yaml',
+    DEFAULT_DINAMIC_MODEL_CONFIGS = [
+        # './configs/torchvision/detector_config_fasterRCNN.yaml',
+        # './configs/torchvision/detector_config_FCOS.yaml',
+        # './configs/torchvision/detector_config_RetinaNet.yaml',
+        # './configs/torchvision/detector_config_SSD.yaml',
+        # './configs/torchvision/detector_config_SSDlite.yaml',
+        #
+        # './configs/yolo/detector_config_yolov3_tinyu.yaml',
+        # './configs/yolo/detector_config_yolov11s.yaml',
+        # './configs/yolo/detector_config_yolov12s.yaml',
+        # './configs/rtdetr/detector_config_rtdetr-l.yaml',
     ]
+    DEFAULT_ONNX_MODEL_CONFIGS = [
+        './configs/onnx/detector_config_yolov3-tinyu_onnx.yaml',
+        './configs/onnx/detector_config_yolov11s_onnx.yaml',
+        './configs/onnx/detector_config_yolov12s_onnx.yaml'
+    ]
+
     DEFAULT_BATCH_SIZES = [1, 2, 4, 8, 16]
 
     try:
@@ -209,7 +237,8 @@ if __name__ == '__main__':
             args.mode
         )
         run_experiments(
-            DEFAULT_MODEL_CONFIGS,
+            DEFAULT_DINAMIC_MODEL_CONFIGS,
+            DEFAULT_ONNX_MODEL_CONFIGS,
             DEFAULT_BATCH_SIZES,
             data_params,
         )
